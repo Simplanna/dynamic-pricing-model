@@ -42,6 +42,6 @@ The pricing engine should be structured with clear separation between:
 
 ## APIs and Integrations
 
-- **Leafly Scraping Engine**: Key = 99XUHEZ6W021CVZWRCOO6KZ016HMFL3XFH43FB7AU556GZ94DA0RGA137PBLLYW1QSOOAXCVPPV2W930 (internal)
+- **ScrapingBee Scraping Engine**: Key = 99XUHEZ6W021CVZWRCOO6KZ016HMFL3XFH43FB7AU556GZ94DA0RGA137PBLLYW1QSOOAXCVPPV2W930 (internal)
 - **State Compliance APIs**: Optional integration for RI/MA compliance
 - **POS Inventory Webhook**: Simulation (mocked for development)
