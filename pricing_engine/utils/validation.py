@@ -1,343 +1,274 @@
-from typing import Dict, List, Any, Optional, Tuple
-import pandas as pd
+"""Safety Controls and Validation Utilities
+
+Implements comprehensive validation and safety checks for pricing decisions.
+"""
+
+from datetime import datetime, timedelta
+from typing import Dict, List, Tuple, Optional
 import numpy as np
-from datetime import datetime
-import logging
-from fuzzywuzzy import fuzz
-from ..core.models import ProductCategory
 
 
-logger = logging.getLogger(__name__)
-
-
-class DataValidator:
-    """Data validation and quality assurance for pricing data"""
+class PricingValidator:
+    """Validates pricing decisions against business rules and safety controls"""
     
-    PRICE_LIMITS = {
-        'min': 1.0,
-        'max': 1000.0
-    }
-    
-    THC_LIMITS = {
-        'min': 0.0,
-        'max': 40.0
-    }
-    
-    CBD_LIMITS = {
-        'min': 0.0,
-        'max': 30.0
-    }
-    
-    VALID_CATEGORIES = [cat.value for cat in ProductCategory]
-    
-    def __init__(self):
-        self.validation_errors = []
-        self.validation_stats = {
-            'total_validated': 0,
-            'passed': 0,
-            'failed': 0,
-            'warnings': 0
-        }
+    def __init__(self, safety_controls: Dict):
+        """Initialize with safety control configuration"""
+        self.safety_controls = safety_controls
+        self.validation_history = []
         
-    def validate_price(self, price: float, product_name: str = "") -> Tuple[bool, Optional[str]]:
-        """Validate price is within acceptable range"""
-        if price is None:
-            return False, f"Price is missing for {product_name}"
-            
-        if price < self.PRICE_LIMITS['min']:
-            return False, f"Price ${price} below minimum ${self.PRICE_LIMITS['min']} for {product_name}"
-            
-        if price > self.PRICE_LIMITS['max']:
-            return False, f"Price ${price} above maximum ${self.PRICE_LIMITS['max']} for {product_name}"
-            
-        return True, None
+    def validate_price_change(self, 
+                            current_price: float,
+                            new_price: float,
+                            product_data: Dict) -> Tuple[bool, List[str]]:
+        """Validate a proposed price change"""
+        violations = []
         
-    def validate_cannabinoids(self, thc: float, cbd: float, product_name: str = "") -> Tuple[bool, List[str]]:
-        """Validate THC and CBD percentages"""
-        errors = []
+        # Calculate price change
+        price_change = (new_price - current_price) / current_price
         
-        if thc < self.THC_LIMITS['min'] or thc > self.THC_LIMITS['max']:
-            errors.append(f"THC {thc}% outside valid range {self.THC_LIMITS['min']}-{self.THC_LIMITS['max']}% for {product_name}")
-            
-        if cbd < self.CBD_LIMITS['min'] or cbd > self.CBD_LIMITS['max']:
-            errors.append(f"CBD {cbd}% outside valid range {self.CBD_LIMITS['min']}-{self.CBD_LIMITS['max']}% for {product_name}")
-            
-        # Logic check: total cannabinoids shouldn't exceed ~35-40%
-        if thc + cbd > 45:
-            errors.append(f"Total cannabinoids {thc + cbd}% unrealistically high for {product_name}")
-            
-        return len(errors) == 0, errors
-        
-    def validate_category(self, category: str) -> Tuple[bool, Optional[str]]:
-        """Validate product category"""
-        if not category:
-            return False, "Category is missing"
-            
-        normalized = category.lower().strip()
-        
-        # Direct match
-        if normalized in self.VALID_CATEGORIES:
-            return True, None
-            
-        # Fuzzy match for common variations
-        category_mappings = {
-            'flowers': 'flower',
-            'pre-rolls': 'prerolls',
-            'pre rolls': 'prerolls',
-            'carts': 'vape',
-            'cartridges': 'vape',
-            'edible': 'edibles',
-            'concentrate': 'concentrates',
-            'tincture': 'tinctures',
-            'topical': 'topicals'
-        }
-        
-        if normalized in category_mappings:
-            return True, None
-            
-        return False, f"Invalid category: {category}"
-        
-    def validate_product_data(self, product: Dict[str, Any]) -> Dict[str, Any]:
-        """Comprehensive validation of product data"""
-        self.validation_stats['total_validated'] += 1
-        
-        validation_result = {
-            'valid': True,
-            'errors': [],
-            'warnings': [],
-            'data': product.copy()
-        }
-        
-        # Required fields
-        required_fields = ['name', 'price', 'category']
-        for field in required_fields:
-            if field not in product or product[field] is None:
-                validation_result['errors'].append(f"Required field '{field}' is missing")
-                validation_result['valid'] = False
-                
-        # Price validation
-        if 'price' in product:
-            valid, error = self.validate_price(product.get('price'), product.get('name', ''))
-            if not valid:
-                validation_result['errors'].append(error)
-                validation_result['valid'] = False
-                
-        # Cannabinoid validation
-        thc = product.get('thc', 0.0) or 0.0
-        cbd = product.get('cbd', 0.0) or 0.0
-        valid, errors = self.validate_cannabinoids(thc, cbd, product.get('name', ''))
-        if not valid:
-            validation_result['errors'].extend(errors)
-            validation_result['valid'] = False
-            
-        # Category validation
-        if 'category' in product:
-            valid, error = self.validate_category(product['category'])
-            if not valid:
-                validation_result['warnings'].append(error)
-                # Try to fix category
-                fixed_category = self.fix_category(product['category'])
-                if fixed_category:
-                    validation_result['data']['category'] = fixed_category
-                    validation_result['warnings'].append(f"Category fixed: {product['category']} -> {fixed_category}")
-                    
-        # Data consistency checks
-        if product.get('weight_grams'):
-            if product['weight_grams'] <= 0 or product['weight_grams'] > 1000:
-                validation_result['warnings'].append(f"Unusual weight: {product['weight_grams']}g")
-                
-        # Update stats
-        if validation_result['valid']:
-            self.validation_stats['passed'] += 1
-        else:
-            self.validation_stats['failed'] += 1
-            
-        if validation_result['warnings']:
-            self.validation_stats['warnings'] += 1
-            
-        return validation_result
-        
-    def fix_category(self, category: str) -> Optional[str]:
-        """Attempt to fix common category issues"""
-        if not category:
-            return None
-            
-        normalized = category.lower().strip()
-        
-        # Common mappings
-        category_mappings = {
-            'flowers': 'flower',
-            'pre-rolls': 'prerolls',
-            'pre rolls': 'prerolls',
-            'carts': 'vape',
-            'cartridges': 'vape',
-            'vapes': 'vape',
-            'edible': 'edibles',
-            'concentrate': 'concentrates',
-            'concentrates': 'concentrates',
-            'tincture': 'tinctures',
-            'topical': 'topicals'
-        }
-        
-        if normalized in category_mappings:
-            return category_mappings[normalized]
-            
-        # Fuzzy matching against valid categories
-        best_match = None
-        best_score = 0
-        
-        for valid_cat in self.VALID_CATEGORIES:
-            score = fuzz.ratio(normalized, valid_cat)
-            if score > best_score and score > 80:  # 80% similarity threshold
-                best_score = score
-                best_match = valid_cat
-                
-        return best_match
-        
-    def validate_batch(self, products: List[Dict[str, Any]]) -> Dict[str, Any]:
-        """Validate a batch of products"""
-        results = []
-        
-        for product in products:
-            result = self.validate_product_data(product)
-            results.append(result)
-            
-        # Summary statistics
-        summary = {
-            'total': len(products),
-            'valid': sum(1 for r in results if r['valid']),
-            'invalid': sum(1 for r in results if not r['valid']),
-            'warnings': sum(1 for r in results if r['warnings']),
-            'validation_results': results,
-            'stats': self.validation_stats.copy()
-        }
-        
-        return summary
-
-
-class ProductMatcher:
-    """Match products across different dispensaries"""
-    
-    def __init__(self, confidence_threshold: float = 0.8):
-        self.confidence_threshold = confidence_threshold
-        
-    def calculate_match_score(self, product1: Dict, product2: Dict) -> Tuple[float, Dict[str, bool]]:
-        """Calculate match confidence between two products"""
-        scores = {}
-        criteria = {}
-        
-        # Category must match exactly
-        if product1.get('category') == product2.get('category'):
-            scores['category'] = 1.0
-            criteria['category_match'] = True
-        else:
-            return 0.0, {'category_match': False}
-            
-        # Brand matching (exact or fuzzy)
-        brand1 = (product1.get('brand') or '').lower().strip()
-        brand2 = (product2.get('brand') or '').lower().strip()
-        
-        if brand1 and brand2:
-            if brand1 == brand2:
-                scores['brand'] = 1.0
-                criteria['brand_match'] = True
-            else:
-                brand_score = fuzz.ratio(brand1, brand2) / 100.0
-                scores['brand'] = brand_score * 0.8  # Slight penalty for fuzzy match
-                criteria['brand_match'] = brand_score > 0.8
-        else:
-            scores['brand'] = 0.5  # No brand info
-            criteria['brand_match'] = False
-            
-        # THC percentage matching (within 2% is considered a match)
-        thc1 = product1.get('thc', 0.0) or 0.0
-        thc2 = product2.get('thc', 0.0) or 0.0
-        
-        if abs(thc1 - thc2) <= 2.0:
-            scores['thc'] = 1.0
-            criteria['thc_match'] = True
-        elif abs(thc1 - thc2) <= 5.0:
-            scores['thc'] = 0.7
-            criteria['thc_match'] = True
-        else:
-            scores['thc'] = max(0, 1 - abs(thc1 - thc2) / 20.0)
-            criteria['thc_match'] = False
-            
-        # Name similarity (fuzzy matching)
-        name1 = (product1.get('name') or '').lower().strip()
-        name2 = (product2.get('name') or '').lower().strip()
-        
-        if name1 and name2:
-            name_score = fuzz.token_sort_ratio(name1, name2) / 100.0
-            scores['name'] = name_score
-            criteria['name_match'] = name_score > 0.7
-        else:
-            scores['name'] = 0.0
-            criteria['name_match'] = False
-            
-        # Weight matching (if available)
-        weight1 = product1.get('weight_grams')
-        weight2 = product2.get('weight_grams')
-        
-        if weight1 and weight2:
-            if abs(weight1 - weight2) < 0.1:
-                scores['weight'] = 1.0
-                criteria['weight_match'] = True
-            else:
-                scores['weight'] = max(0, 1 - abs(weight1 - weight2) / max(weight1, weight2))
-                criteria['weight_match'] = scores['weight'] > 0.9
-        else:
-            scores['weight'] = 0.5  # No weight info
-            criteria['weight_match'] = False
-            
-        # Calculate weighted average
-        weights = {
-            'category': 0.25,
-            'brand': 0.25,
-            'thc': 0.20,
-            'name': 0.20,
-            'weight': 0.10
-        }
-        
-        total_score = sum(scores.get(k, 0) * v for k, v in weights.items())
-        
-        return total_score, criteria
-        
-    def find_matches(self, target_product: Dict, competitor_products: List[Dict]) -> List[Dict[str, Any]]:
-        """Find matching products from competitors"""
-        matches = []
-        
-        for comp_product in competitor_products:
-            score, criteria = self.calculate_match_score(target_product, comp_product)
-            
-            if score >= self.confidence_threshold:
-                matches.append({
-                    'matched_product': comp_product,
-                    'confidence_score': score,
-                    'match_criteria': criteria,
-                    'price_difference': comp_product.get('price', 0) - target_product.get('price', 0)
-                })
-                
-        # Sort by confidence score
-        matches.sort(key=lambda x: x['confidence_score'], reverse=True)
-        
-        return matches
-        
-    def deduplicate_matches(self, matches: List[Dict]) -> List[Dict]:
-        """Remove duplicate matches, keeping highest confidence"""
-        seen = set()
-        unique_matches = []
-        
-        for match in matches:
-            # Create unique key based on dispensary and product
-            key = (
-                match['matched_product'].get('dispensary_id', ''),
-                match['matched_product'].get('name', ''),
-                match['matched_product'].get('brand', '')
+        # Check daily change limit
+        max_daily_change = self.safety_controls.get('max_daily_change', 0.05)
+        if abs(price_change) > max_daily_change:
+            violations.append(
+                f"Price change {price_change:.1%} exceeds daily limit of {max_daily_change:.1%}"
             )
             
-            if key not in seen:
-                seen.add(key)
-                unique_matches.append(match)
+        # Check minimum margin
+        cost = product_data.get('cost', 0)
+        if cost > 0:
+            margin = (new_price - cost) / new_price
+            min_margin = self.safety_controls.get('min_margin', 0.15)
+            if margin < min_margin:
+                violations.append(
+                    f"Margin {margin:.1%} below minimum of {min_margin:.1%}"
+                )
                 
-        return unique_matches
+        # Check maximum discount
+        base_price = product_data.get('base_price', current_price)
+        discount = (base_price - new_price) / base_price
+        max_discount = self.safety_controls.get('max_discount', 0.40)
+        if discount > max_discount:
+            violations.append(
+                f"Discount {discount:.1%} exceeds maximum of {max_discount:.1%}"
+            )
+            
+        # Check absolute bounds
+        floor_mult = self.safety_controls.get('price_floor_multiplier', 0.60)
+        ceiling_mult = self.safety_controls.get('price_ceiling_multiplier', 1.50)
+        
+        if new_price < base_price * floor_mult:
+            violations.append(
+                f"Price below floor of {floor_mult:.0%} of base price"
+            )
+        elif new_price > base_price * ceiling_mult:
+            violations.append(
+                f"Price above ceiling of {ceiling_mult:.0%} of base price"
+            )
+            
+        is_valid = len(violations) == 0
+        return is_valid, violations
+        
+    def validate_factor_weights(self, weights: Dict) -> Tuple[bool, List[str]]:
+        """Validate that factor weights are properly configured"""
+        issues = []
+        
+        # Check sum equals 1.0
+        weight_sum = sum(weights.values())
+        if abs(weight_sum - 1.0) > 0.001:
+            issues.append(f"Weights sum to {weight_sum:.3f}, should be 1.000")
+            
+        # Check individual weights are reasonable
+        for factor, weight in weights.items():
+            if weight < 0:
+                issues.append(f"{factor} has negative weight: {weight}")
+            elif weight > 0.5:
+                issues.append(f"{factor} has excessive weight: {weight}")
+                
+        is_valid = len(issues) == 0
+        return is_valid, issues
+        
+    def check_price_stability(self, 
+                            price_history: List[Dict],
+                            threshold: float = 0.15) -> Dict:
+        """Check for price stability issues"""
+        if len(price_history) < 2:
+            return {'stable': True, 'volatility': 0, 'issues': []}
+            
+        # Convert to numpy array for calculations
+        prices = np.array([p['price'] for p in price_history])
+        timestamps = [p['timestamp'] for p in price_history]
+        
+        # Calculate volatility
+        returns = np.diff(prices) / prices[:-1]
+        volatility = np.std(returns)
+        
+        # Check for oscillations
+        sign_changes = np.sum(np.diff(np.sign(returns)) != 0)
+        oscillation_rate = sign_changes / len(returns)
+        
+        issues = []
+        if volatility > threshold:
+            issues.append(f"High price volatility: {volatility:.1%}")
+            
+        if oscillation_rate > 0.5:
+            issues.append(f"Price oscillation detected: {oscillation_rate:.1%} direction changes")
+            
+        # Check for sudden jumps
+        max_jump = np.max(np.abs(returns))
+        if max_jump > 0.2:
+            issues.append(f"Large price jump detected: {max_jump:.1%}")
+            
+        return {
+            'stable': len(issues) == 0,
+            'volatility': volatility,
+            'oscillation_rate': oscillation_rate,
+            'issues': issues
+        }
+        
+    def validate_market_conditions(self, market_data: Dict) -> Tuple[bool, List[str]]:
+        """Validate market data quality and conditions"""
+        issues = []
+        
+        # Check data freshness
+        if 'last_updated' in market_data:
+            last_update = market_data['last_updated']
+            if isinstance(last_update, str):
+                last_update = datetime.fromisoformat(last_update)
+            age_hours = (datetime.now() - last_update).total_seconds() / 3600
+            
+            if age_hours > 24:
+                issues.append(f"Market data is {age_hours:.1f} hours old")
+                
+        # Check competitor data
+        competitors = market_data.get('competitors', [])
+        if len(competitors) < 3:
+            issues.append(f"Limited competitor data: only {len(competitors)} competitors")
+            
+        # Check sales history
+        sales_history = market_data.get('sales_history', [])
+        if len(sales_history) < 7:
+            issues.append(f"Limited sales history: only {len(sales_history)} days")
+            
+        # Check inventory data
+        inventory = market_data.get('inventory', {})
+        if inventory.get('quantity', 0) < 0:
+            issues.append("Invalid inventory quantity")
+            
+        is_valid = len(issues) == 0
+        return is_valid, issues
+        
+    def suggest_price_adjustment(self,
+                               current_price: float,
+                               recommended_price: float,
+                               violations: List[str]) -> float:
+        """Suggest a compliant price adjustment"""
+        if not violations:
+            return recommended_price
+            
+        # Apply constraints to find compliant price
+        adjusted_price = recommended_price
+        
+        # Apply daily change cap
+        max_change = self.safety_controls.get('max_daily_change', 0.05)
+        price_change = (recommended_price - current_price) / current_price
+        
+        if abs(price_change) > max_change:
+            if price_change > 0:
+                adjusted_price = current_price * (1 + max_change)
+            else:
+                adjusted_price = current_price * (1 - max_change)
+                
+        return adjusted_price
+
+
+class ComplianceChecker:
+    """Ensures pricing complies with state regulations"""
+    
+    # State-specific rules
+    STATE_RULES = {
+        'MA': {
+            'max_thc_flower': 30.0,  # % THC limit
+            'max_edible_package': 100,  # mg THC
+            'max_concentrate_package': 5000,  # mg THC
+            'required_taxes': ['excise', 'state', 'local'],
+            'min_price_per_gram': 5.0  # Minimum to discourage diversion
+        },
+        'RI': {
+            'max_thc_flower': 28.0,
+            'max_edible_package': 100,
+            'max_concentrate_package': 3000,
+            'required_taxes': ['excise', 'state'],
+            'min_price_per_gram': 4.0
+        }
+    }
+    
+    def check_compliance(self, 
+                        product_data: Dict,
+                        price: float,
+                        state: str = 'MA') -> Tuple[bool, List[str]]:
+        """Check pricing compliance with state regulations"""
+        violations = []
+        rules = self.STATE_RULES.get(state, self.STATE_RULES['MA'])
+        
+        category = product_data.get('category', 'flower')
+        
+        # Check minimum pricing (anti-diversion)
+        if category == 'flower':
+            size_grams = product_data.get('size', 1.0)
+            if product_data.get('size_unit') == 'oz':
+                size_grams *= 28.0
+                
+            price_per_gram = price / size_grams
+            min_price = rules['min_price_per_gram']
+            
+            if price_per_gram < min_price:
+                violations.append(
+                    f"Price per gram ${price_per_gram:.2f} below minimum ${min_price:.2f}"
+                )
+                
+        # Check THC limits
+        thc_content = product_data.get('thc_percentage', 0)
+        
+        if category == 'flower' and thc_content > rules['max_thc_flower']:
+            violations.append(
+                f"THC content {thc_content}% exceeds limit of {rules['max_thc_flower']}%"
+            )
+            
+        # Verify tax inclusion
+        if not product_data.get('taxes_included', False):
+            violations.append("Prices must include all applicable taxes")
+            
+        is_compliant = len(violations) == 0
+        return is_compliant, violations
+        
+    def calculate_tax_inclusive_price(self,
+                                    base_price: float,
+                                    state: str = 'MA') -> Dict:
+        """Calculate tax-inclusive pricing"""
+        tax_rates = {
+            'MA': {
+                'excise': 0.1075,  # 10.75% excise
+                'state': 0.0625,   # 6.25% state sales
+                'local': 0.03      # Up to 3% local
+            },
+            'RI': {
+                'excise': 0.10,    # 10% excise
+                'state': 0.07,     # 7% state sales
+                'local': 0.0       # No local cannabis tax
+            }
+        }
+        
+        rates = tax_rates.get(state, tax_rates['MA'])
+        
+        # Calculate cumulative tax
+        total_tax_rate = sum(rates.values())
+        tax_amount = base_price * total_tax_rate
+        total_price = base_price + tax_amount
+        
+        return {
+            'base_price': base_price,
+            'tax_amount': tax_amount,
+            'total_price': total_price,
+            'tax_rate': total_tax_rate,
+            'tax_breakdown': rates
+        }
